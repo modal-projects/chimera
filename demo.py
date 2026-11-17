@@ -699,7 +699,7 @@ async def event_stream(
         renderer = None
         stage = "render_setup"
         try:
-            renderer = Renderer(emit, stop)
+            renderer = Renderer(emit, stop, telemetry_format=telemetry_format)
             for attempt in range(2):
                 start = time.monotonic()
                 try:
@@ -772,6 +772,7 @@ def create_web(endpoint_factory=None, static_dir=None):
     class Say(BaseModel):
         text: str = Field(min_length=1, max_length=500)
         history: list[Message] = Field(default=[], max_length=40)
+        telemetry_format: Literal["f64", "f32"] = "f64"
 
     @asynccontextmanager
     async def lifespan(_app):
@@ -811,6 +812,7 @@ def create_web(endpoint_factory=None, static_dir=None):
                 body.text,
                 body.history,
                 endpoint_factory or shared_endpoint,
+                telemetry_format=body.telemetry_format,
                 request_id=request_id,
             ),
             media_type="text/event-stream",

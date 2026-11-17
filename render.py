@@ -82,6 +82,13 @@ def default_f0(body):
     return math.exp(sum(wi * math.log(f0) for wi, f0 in zip(w, (110.0, 205.0, 260.0))))
 
 
+def _tele_block(raw):
+    n = (len(raw) - TELE_HEADER * 8) // 8
+    return raw[: TELE_HEADER * 8] + struct.pack(
+        f"<{n}f", *struct.unpack(f"<{n}d", raw[TELE_HEADER * 8 :])
+    )
+
+
 class Voice:
 
     def __init__(self, body):
@@ -134,7 +141,7 @@ class Voice:
     def clock(self):
         return self.ex["engine_clock"](self.store, self.h)
 
-    def tele(self):
+    def tele(self, telemetry_format="f64"):
         p = self.ex["engine_telemetry"](self.store, self.h)
         hdr = struct.unpack("<16d", bytes(self.mem.read(self.store, p, p + TELE_HEADER * 8)))
         total = TELE_HEADER + int(hdr[11]) + 3 * int(hdr[12] + hdr[13]) + 2 * int(hdr[14])
@@ -142,10 +149,11 @@ class Voice:
         lp = self.ex["engine_tele_labels"](self.store, self.h)
         labels = bytes(self.mem.read(self.store, lp, lp + 100))
         return {
-            "block": base64.b64encode(block).decode(),
+            "block": base64.b64encode(_tele_block(block) if telemetry_format == "f32" else block).decode(),
             "labels": base64.b64encode(labels).decode(),
             "body": dict(self.body),
             "beatStep": self.ex["engine_beat_step"](self.store, self.h),
+            "format": telemetry_format,
         }
 
 
@@ -263,10 +271,11 @@ def plan_sing(voice, lyrics, notes, bpm, vibrato, ipa=None):
 
 
 def _emit_audio(emit, n, block, gain):
+    pcm = struct.pack(f"<{BLOCK}h", *(max(-32768, min(32767, int(x * gain * 32767))) for x in block))
     emit("audio", {"n": n, "sr": SR, "pcm": base64.b64encode(pcm).decode()})
 
 
-def _render_voice(voice, plan, n, part, emit, stop=None):
+def _render_voice(voice, plan, n, part, emit, stop=None, telemetry_format="f64"):
     off = voice.schedule(plan["gestures"], LEAD)
     end = off + plan["end"] + TAIL
     while voice.clock() < end:
@@ -276,7 +285,7 @@ def _render_voice(voice, plan, n, part, emit, stop=None):
         for i in range(BLOCK // SUB):
             block += voice.render(SUB)
             if i % 2 == 0:
-                emit("tele", {"n": n, "part": part, **voice.tele()})
+                emit("tele", {"n": n, "part": part, **voice.tele(telemetry_format=telemetry_format)})
         yield block
 
 
@@ -290,7 +299,7 @@ def _plan_seconds(end):
     return math.ceil((end + LEAD + TAIL) * SR / BLOCK) * BLOCK / SR
 
 
-def _solo(job, emit, stop=None, reserve=None):
+def _solo(job, emit, stop=None, reserve=None, telemetry_format="f64"):
     voice = Voice(job["args"].get("body") or "female")
     plan, lines = plan_sing(voice, job["args"]["lyrics"], job["args"]["notes"], job["args"].get("bpm"), job["args"].get("vibrato"), job["args"].get("ipa")) \
         if job["name"] == "sing" else plan_speak(voice, job["args"])
@@ -300,12 +309,12 @@ def _solo(job, emit, stop=None, reserve=None):
     if reserve is not None:
         reserve(duration)
     emit("lines", {"n": job["n"], "lines": [{"at": l["at"] + LEAD, "text": l["text"]} for l in lines]})
-    for block in _render_voice(voice, plan, job["n"], None, emit, stop):
+    for block in _render_voice(voice, plan, job["n"], None, emit, stop, telemetry_format=telemetry_format):
         _emit_audio(emit, job["n"], block, 0.8)
 
 
+def _choir(job, emit, stop=None, reserve=None, telemetry_format="f64"):
     args = job["args"]
-def _choir(job, emit, stop=None, reserve=None):
     wanted = {p["part"]: p for p in args["parts"] if p.get("part") in PARTS}
     plans = {}
     voices = {}
@@ -324,7 +333,7 @@ def _choir(job, emit, stop=None, reserve=None):
 
     def worker(part):
         try:
-            for i, block in enumerate(_render_voice(voices[part], plans[part], job["n"], part, emit, stop)):
+            for i, block in enumerate(_render_voice(voices[part], plans[part], job["n"], part, emit, stop, telemetry_format=telemetry_format)):
                 mix_q.put((part, i, block))
             mix_q.put((part, -1, None))
         except Exception as e:
@@ -381,9 +390,10 @@ def error_context(error):
 
 class Renderer:
 
-    def __init__(self, emit, stop=None):
+    def __init__(self, emit, stop=None, telemetry_format="f64"):
         self.emit = emit
         self.stop = stop
+        self.telemetry_format = telemetry_format
         self.jobs = Queue()
         self.remaining = MAX_REQUEST_SECONDS
         self.worker = threading.Thread(target=self._run, daemon=True)
@@ -413,9 +423,9 @@ class Renderer:
                 return
             try:
                 if job["name"] == "choir":
-                    _choir(job, self.emit, self.stop, self.reserve)
+                    _choir(job, self.emit, self.stop, self.reserve, telemetry_format=self.telemetry_format)
                 else:
-                    _solo(job, self.emit, self.stop, self.reserve)
+                    _solo(job, self.emit, self.stop, self.reserve, telemetry_format=self.telemetry_format)
             except Exception as e:
                 self.emit(
                     "error",

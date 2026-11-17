@@ -17,12 +17,22 @@ export function voiceBody(part: Part): BodyMix {
 
 const TELE_HEADER = 16;
 
-export function teleMsg(blockB64: string, labelsB64: string, body: BodyMix, beatStep: number): TelemetryMessage {
+export function teleMsg(blockB64: string, labelsB64: string, body: BodyMix, beatStep: number, format?: string): TelemetryMessage {
   const bytes = Uint8Array.from(atob(blockB64), (c) => c.charCodeAt(0));
-  const all = new Float64Array(bytes.buffer, 0, bytes.byteLength / 8);
-  const [phLen, orLen, velumPort, f0, voicing, pLung, outRms, noiseLevel, noiseNode, gate, clock, nArtic, nPh, nOr, nScope, nActive] = all;
-  let o = TELE_HEADER;
-  const take = (n: number) => Float32Array.from(all.subarray(o, (o += n)));
+  const head = new Float64Array(bytes.buffer, 0, TELE_HEADER);
+  let take: (n: number) => Float32Array;
+  if (format === undefined || format === "f64") {
+    const all = new Float64Array(bytes.buffer, 0, bytes.byteLength / 8);
+    let o = TELE_HEADER;
+    take = (n: number) => Float32Array.from(all.subarray(o, (o += n)));
+  } else if (format === "f32") {
+    const payload = new Float32Array(bytes.buffer, TELE_HEADER * 8);
+    let o = 0;
+    take = (n: number) => Float32Array.from(payload.subarray(o, (o += n)));
+  } else {
+    throw new Error(`unknown telemetry format: ${format}`);
+  }
+  const [phLen, orLen, velumPort, f0, voicing, pLung, outRms, noiseLevel, noiseNode, gate, clock, nArtic, nPh, nOr, nScope, nActive] = head;
   const artic = take(nArtic), phAreas = take(nPh), orAreas = take(nOr), pressureRms = take(nPh + nOr), flow = take(nPh + nOr), glottalArea = take(nScope), glottalFlow = take(nScope);
   const lb = Uint8Array.from(atob(labelsB64), (c) => c.charCodeAt(0));
   const active: string[] = [];
@@ -37,6 +47,7 @@ export function teleMsg(blockB64: string, labelsB64: string, body: BodyMix, beat
     beatStep,
   };
 }
+
 export function decodePcm(b64: string): Float32Array {
   const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
   const i16 = new Int16Array(bytes.buffer, 0, bytes.byteLength / 2);

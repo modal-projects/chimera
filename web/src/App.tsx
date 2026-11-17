@@ -98,7 +98,7 @@ export function App() {
           }
         } else if(event==="tele") {
           const v=value.part?choirVoices.get(value.part as Part):solo;
-          const msg=teleMsg(value.block, value.labels, value.body, value.beatStep);
+          const msg=teleMsg(value.block, value.labels, value.body, value.beatStep, value.format);
           v?.push(msg, player.offsetOf(value.n as number));
         } else if(event==="model_state") {
           if(turn.current===id) setThinking(value.state==="thinking");
