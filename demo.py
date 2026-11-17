@@ -14,6 +14,8 @@ import jsonschema
 import modal
 import re
 
+from render import Renderer, error_context
+
 ROOT = Path(__file__).resolve().parent
 MODEL = os.environ.get("CHIMERA_DEMO_MODEL", "kimi-k3-1-pro")
 ENVIRONMENT = os.environ.get("CHIMERA_DEMO_ENV", "demos")
@@ -433,8 +435,11 @@ async def conversation(messages, endpoint, emit, endpoint_setup_s=0, renderer=No
 
     def on_call(index, name, arguments, model_s):
         nonlocal call_count
+        args = validate(name, arguments)
         call_count += 1
         emit("attempt", {"n": call_count, "tool": name, "model_s": model_s, **args})
+        if renderer is not None:
+            renderer.enqueue(call_count, name, args)
 
     tools = TOOLS
     system = {
@@ -665,14 +670,20 @@ async def event_stream(
         )
 
     async def work():
+        renderer = None
+        stage = "render_setup"
         try:
+            renderer = Renderer(emit, stop)
             for attempt in range(2):
                 start = time.monotonic()
                 try:
+                    stage = "endpoint"
                     endpoint = await endpoint_factory()
+                    stage = "model"
                     await conversation(
                         messages, endpoint, emit,
                         endpoint_setup_s=time.monotonic() - start,
+                        renderer=renderer, stop=stop,
                     )
                     break
                 except (StalledCompletion, httpx.HTTPError):
@@ -691,9 +702,12 @@ async def event_stream(
                 "error",
                 {
                     "message": detail,
+                    "_diagnostic": {"stage": stage, **error_context(error)},
                 },
             )
         finally:
+            if renderer is not None:
+                await asyncio.to_thread(renderer.finish)
             await asyncio.sleep(0)
             events.put_nowait(None)
 
@@ -762,6 +776,7 @@ def create_web(endpoint_factory=None, static_dir=None):
             _endpoint_lock = None
 
     web = FastAPI(lifespan=lifespan)
+
     @web.post("/api/say")
     async def say(body: Say):
         request_id = uuid.uuid4().hex
@@ -793,6 +808,7 @@ image = (
 )
 if (ROOT / "web/dist").exists():
     image = image.add_local_dir(ROOT / "web/dist", "/demo/web/dist", copy=True)
+image = image.add_local_file(ROOT / "render.py", "/demo/render.py", copy=True)
 
 
 app = modal.App("chimera-demo")
