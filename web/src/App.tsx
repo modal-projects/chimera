@@ -6,9 +6,9 @@ import { PRESETS } from "../../vendor/chimera/src/ui/body.ts";
 import type { BodyName } from "../../vendor/chimera/src/worklet/protocol.ts";
 import "./style.css";
 
-function ChoirCell({part,voice,delay,leaving}:{part:Part;voice:StreamVoice;delay:number;leaving:boolean}) {
+function ChoirCell({part,voice,delay,leaving,thinking}:{part:Part;voice:StreamVoice;delay:number;leaving:boolean;thinking:boolean}) {
   return <section className={`head summon${leaving?" dismiss":""}`} style={{animationDelay:`${delay*90}ms`}}>
-    <FrontalHead audio={voice} body={voiceBody(part)}/>
+    <FrontalHead audio={voice} body={voiceBody(part)} thinking={thinking}/>
     <span className={`part-tag${voice.ctx?.state!=="running"?" silent":""}`}>{part}</span>
   </section>;
 }
@@ -20,6 +20,7 @@ export function App() {
   const [busy,setBusy] = useState(false);
   const [chorus,setChorus] = useState<[Part,StreamVoice][]|null>(null);
   const [dismissing,setDismissing] = useState(false);
+  const [thinking,setThinking] = useState(false);
   const convo = useRef<{role:"user"|"assistant";content:string}[]>([]);
   const soloRef = useRef<StreamVoice|null>(null);
   const choirRef = useRef<Map<Part,StreamVoice>|null>(null);
@@ -29,7 +30,7 @@ export function App() {
     const message=text.trim();
     if (!message || busy) return;
     const id=++turn.current;
-    setBusy(true); setError(""); setReply(""); setText(""); setDismissing(false)
+    setBusy(true); setError(""); setReply(""); setText(""); setThinking(false); setDismissing(false);
     let pumping=false;
     const abort=new AbortController();
     let audioError:Error|null=null;
@@ -99,6 +100,8 @@ export function App() {
           const v=value.part?choirVoices.get(value.part as Part):solo;
           const msg=teleMsg(value.block, value.labels, value.body, value.beatStep);
           v?.push(msg, player.offsetOf(value.n as number));
+        } else if(event==="model_state") {
+          if(turn.current===id) setThinking(value.state==="thinking");
         } else if(event==="error") throw new Error(value.message);
       };
       try {
@@ -106,6 +109,7 @@ export function App() {
       } finally {
         await reader.cancel().catch(()=>{});
       }
+      setThinking(false);
       if(!phraseStart.size) throw new Error("No call received");
       await player.finish();
       await player.audibleEnd();
@@ -126,8 +130,8 @@ export function App() {
       const failure=audioError??error;
       setError(failure instanceof Error?failure.message:"Request failed");
       setReply("");
-    } finally { pumping=false; setBusy(false); }
       setText(t=>t||message);
+    } finally { setThinking(false); pumping=false; setBusy(false); }
   };
   return <main><header>
     <div className="head-meta">
@@ -136,9 +140,9 @@ export function App() {
     </div>
   </header>
     <div className={`head-space${chorus?" choir":""}`}>{chorus
-      ? chorus.map(([part,voice],i)=><ChoirCell key={part} part={part} voice={voice} delay={i} leaving={dismissing}/>
+      ? chorus.map(([part,voice],i)=><ChoirCell key={part} part={part} voice={voice} delay={i} leaving={dismissing} thinking={thinking}/>
         )
-      : <section className="head summon"><FrontalHead audio={soloRef.current??undefined}/></section>}</div>
+      : <section className="head summon"><FrontalHead audio={soloRef.current??undefined} thinking={thinking}/></section>}</div>
     <div className="reply" aria-live="polite"><em>{reply||" "}</em></div>
     {error&&<div role="alert" className="speech-error">{error}</div>}
   </main>;

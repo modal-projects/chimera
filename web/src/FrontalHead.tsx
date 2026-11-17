@@ -11,11 +11,13 @@ import { useStore } from "../../vendor/chimera/src/ui/store.ts";
 import { getModel } from "../../vendor/chimera/src/ui/useModel.ts";
 import { VoiceModel } from "../../vendor/chimera/src/ui/analysis.ts";
 
-export function FrontalHead({ audio = engine, body }: { audio?: { latest: TelemetryMessage | null }; body?: BodyMix }) {
+export function FrontalHead({ audio = engine, body, thinking = false }: { audio?: { latest: TelemetryMessage | null }; body?: BodyMix; thinking?: boolean }) {
   const canvasRef=useRef<HTMLCanvasElement>(null);
   const storeBody=useStore((s)=>s.body),started=useStore((s)=>s.started);
   const model=useRef<VoiceModel|null>(null);
   model.current=getModel(body??storeBody,started?engine.sampleRate:48000);
+  const thinkingRef=useRef(thinking);
+  thinkingRef.current=thinking;
   const [failed,setFailed]=useState(false);
   useEffect(()=>{
     const canvas=canvasRef.current!,ctx=canvas.getContext("2d")!;
@@ -31,6 +33,7 @@ export function FrontalHead({ audio = engine, body }: { audio?: { latest: Teleme
     const view={azimuth:0,elevation:0,dragging:false,x:0,y:0};
     const move=(e:PointerEvent)=>{if(!view.dragging)return;view.azimuth+=(e.clientX-view.x)*0.01;view.elevation=Math.max(-0.6,Math.min(0.6,view.elevation+(e.clientY-view.y)*0.008));view.x=e.clientX;view.y=e.clientY};
     const up=()=>{view.dragging=false};
+    const think={eye:0,tilt:0},motionMQ=matchMedia("(prefers-reduced-motion: reduce)");let reduced=motionMQ.matches;
     const fit=()=>{
       const {width,height}=canvas.getBoundingClientRect(),dpr=Math.min(2,window.devicePixelRatio||1);
       canvas.width=Math.max(1,Math.round(width*dpr));canvas.height=Math.max(1,Math.round(height*dpr));
@@ -40,7 +43,12 @@ export function FrontalHead({ audio = engine, body }: { audio?: { latest: Teleme
     const observer=new ResizeObserver(fit);observer.observe(canvas);fit();
     const frame=(now:number)=>{
       const elapsed=Math.min(.5,(now-last)/1000),dt=Math.min(.05,elapsed);last=now;
+      reduced=motionMQ.matches;
+      const want=thinkingRef.current&&!view.dragging?1:0,k=reduced?1:1-Math.exp(-elapsed*12);
+      think.eye+=(want-think.eye)*k;
       const pc=player.ctx,pos=player.audiblePos(),sounding=!!(pc&&pc.state==="running"&&pos>=0&&pos<player.end());
+      const wantTilt=want&&!sounding?1:0;
+      think.tilt+=(wantTilt-think.tilt)*k;
       const m=model.current,st=useStore.getState();
       const tele=audio.latest&&sameBody(audio.latest.body,body??st.body)?audio.latest:null;
       if(!tele&&!view.dragging){idle=!idle;if(idle){raf=requestAnimationFrame(frame);return;}}
@@ -60,7 +68,10 @@ export function FrontalHead({ audio = engine, body }: { audio?: { latest: Teleme
         }
         const artic=tele?VoiceModel.articFromArray(tele.t.artic):st.artic;
         head.face.update(tele,elapsed);
+        const tilt=think.tilt*(reduced?0.04:0.04*(1+0.2*Math.sin(now*0.0007)));
+        head.face.tilt+=tilt;
         head.update(m,m.frame(artic),artic,tele,st.view,dt);
+        head.face.tilt-=tilt;
         gl.render(head.scene,head.camera);
         ctx.setTransform(1,0,0,1,0,0);ctx.globalCompositeOperation="source-over";
         ctx.drawImage(glCanvas,0,0,canvas.width,canvas.height);

@@ -245,6 +245,7 @@ async def stream_complete(
     on_call=None,
     force=True,
     stop=None,
+    on_state=None,
 ):
     payload = {
         "model": endpoint.model_id,
@@ -267,6 +268,14 @@ async def stream_complete(
     last_activity = start
     task = asyncio.current_task()
     cancel_reason = None
+    phase = "idle"
+
+    def set_phase(state):
+        nonlocal phase
+        if state != phase:
+            phase = state
+            if on_state is not None:
+                on_state(state)
 
     async def watch():
         nonlocal cancel_reason
@@ -310,6 +319,10 @@ async def stream_complete(
                         last_activity = time.monotonic()
                         if first is None:
                             first = time.monotonic() - start
+                    if output:
+                        set_phase("responding")
+                    elif reasoning_delta:
+                        set_phase("thinking")
                     if visible is None and output:
                         visible = time.monotonic() - start
                     content += delta.get("content") or ""
@@ -353,6 +366,7 @@ async def stream_complete(
             await watcher
         except asyncio.CancelledError:
             pass
+        set_phase("idle")
     if stop is not None and stop.is_set():
         raise ClientDisconnected()
     metrics = {
@@ -495,6 +509,9 @@ async def conversation(messages, endpoint, emit, endpoint_setup_s=0, renderer=No
             max_tokens=MAX_COMPLETION_TOKENS,
             thinking=songish or any(call["function"]["name"] in ("sing", "choir") for call in all_calls),
             on_call=on_call,
+            on_state=lambda state: emit(
+                "model_state", {"state": state, "turn": turn + 1}
+            ),
             force=not all_calls,
             stop=stop,
         )
@@ -622,6 +639,10 @@ async def event_stream(
         if isinstance(frames, list):
             record["frames"] = frames
         turn = diag.get("turn")
+        if not _is_count(turn):
+            turn = last_turn
+        if _is_count(turn):
+            record["turn"] = turn
         for key in (
             "max_tokens",
             "emitted_calls",
@@ -651,12 +672,17 @@ async def event_stream(
         if kind == "model_limit":
             _log_event("warning", "model_limit", data.get("_diagnostic"))
             return
+        if kind == "model_state":
+            turn = data.get("turn")
+            if _is_count(turn):
+                last_turn = turn
         elif kind == "attempt":
             n = data.get("n")
             tool = data.get("tool")
             if _is_count(n) and isinstance(tool, str) and tool in TOOL_SCHEMAS:
                 tools_by_n[n] = tool
-        started.set()
+        if kind != "model_state":
+            started.set()
         payload = data
         if kind == "error":
             _log_event("error", "request_error", data.get("_diagnostic"), data)
