@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { Anatomy3D } from "../../vendor/chimera/src/ui/render/anatomy3d.ts";
+import { Gaze } from "../../vendor/chimera/src/ui/render/profile.ts";
 import { Glow } from "../../vendor/chimera/src/ui/render/vector.ts";
 import { engine } from "../../vendor/chimera/src/audio/AudioEngine.ts";
 import { player } from "./voices.ts";
@@ -31,9 +32,29 @@ export function FrontalHead({ audio = engine, body, thinking = false }: { audio?
     head.centred=true;
     let posed:VoiceModel|null=null,pose:{home:THREE.Vector3;target:THREE.Vector3}|null=null,raf=0,last=performance.now(),idle=false,headH0=0;
     const view={azimuth:0,elevation:0,dragging:false,x:0,y:0};
+    const down=(e:PointerEvent)=>{view.dragging=true;view.x=e.clientX;view.y=e.clientY;canvas.setPointerCapture(e.pointerId)};
     const move=(e:PointerEvent)=>{if(!view.dragging)return;view.azimuth+=(e.clientX-view.x)*0.01;view.elevation=Math.max(-0.6,Math.min(0.6,view.elevation+(e.clientY-view.y)*0.008));view.x=e.clientX;view.y=e.clientY};
     const up=()=>{view.dragging=false};
+    canvas.addEventListener("pointerdown",down);canvas.addEventListener("pointermove",move);canvas.addEventListener("pointerup",up);canvas.addEventListener("pointercancel",up);
+    const track={x:0,y:0,seen:false},wander=new Gaze(),dv=new THREE.Vector3(),dq=new THREE.Quaternion(),de=new THREE.Euler();
     const think={eye:0,tilt:0},motionMQ=matchMedia("(prefers-reduced-motion: reduce)");let reduced=motionMQ.matches;
+    const see=(e:PointerEvent)=>{const b=canvas.getBoundingClientRect();track.x=2*(e.clientX-b.left)/b.width-1;track.y=1-2*(e.clientY-b.top)/b.height;track.seen=true};
+    window.addEventListener("pointermove",see);window.addEventListener("pointerdown",see);
+    (head as unknown as {gaze:{pitch:number;yaw:number;update(clock:number,dt:number):void}}).gaze={pitch:0,yaw:0,update(clock:number,dt:number){
+      let tp:number,ty:number,smooth=true;
+      if(!track.seen){wander.update(clock,dt);tp=wander.pitch;ty=wander.yaw;smooth=false}
+      else{
+        head.camera.updateMatrixWorld();
+        dv.set(track.x,track.y,1.5).transformDirection(head.camera.matrixWorld).applyQuaternion(dq.setFromEuler(de.set(head.face.tilt,0,head.face.nod)).invert());
+        tp=Math.max(-0.55,Math.min(0.55,Math.asin(Math.max(-1,Math.min(1,dv.y)))));ty=Math.max(-0.95,Math.min(0.95,Math.atan2(dv.z,dv.x)));
+      }
+      if(think.eye>0.001){
+        const sway=reduced?0:0.06*Math.sin(performance.now()*0.0006);
+        tp+=(0.18-tp)*think.eye;ty+=(0.10+sway-ty)*think.eye;
+      }
+      if(reduced||!smooth){this.pitch=tp;this.yaw=ty}
+      else{const e=1-Math.exp(-dt*18);this.pitch+=(tp-this.pitch)*e;this.yaw+=(ty-this.yaw)*e}
+    }};
     const fit=()=>{
       const {width,height}=canvas.getBoundingClientRect(),dpr=Math.min(2,window.devicePixelRatio||1);
       canvas.width=Math.max(1,Math.round(width*dpr));canvas.height=Math.max(1,Math.round(height*dpr));
@@ -80,6 +101,7 @@ export function FrontalHead({ audio = engine, body, thinking = false }: { audio?
       raf=requestAnimationFrame(frame);
     };
     raf=requestAnimationFrame(frame);
+    return()=>{cancelAnimationFrame(raf);observer.disconnect();canvas.removeEventListener("pointerdown",down);canvas.removeEventListener("pointermove",move);canvas.removeEventListener("pointerup",up);canvas.removeEventListener("pointercancel",up);window.removeEventListener("pointermove",see);window.removeEventListener("pointerdown",see);head.dispose();gl.dispose()};
   },[model,audio,body]);
   return <div className="anatomy">{failed?<div role="alert">3D rendering is unavailable.</div>:null}<canvas ref={canvasRef} role="img" aria-label="Animated vocal-tract head"/></div>;
 }
