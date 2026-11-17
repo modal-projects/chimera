@@ -35,7 +35,14 @@ SYSTEM = (
     "syllables aligned with the notes, in the same phoneme alphabet as speak — write it for "
     "every language (Korean, Chinese, etc. too), `bpm` the tempo, `notes` one "
     "[midi, beats] pair per syllable (midi 57-79 sings best), `body` the singer. "
+    "When the user asks for harmony, a choir or multiple voices, keep calling choir for each "
+    "phrase in sequence until the whole song is sung: `parts` must be exactly four entries "
+    "— soprano, alto, tenor, bass — each with that phrase's lyrics and notes on the shared "
+    "`bpm`, every part spanning the same beats so the voices "
+    "reconverge at each boundary; write legato lines, breaths only where a phrase's text ends. "
     "Compact JSON. No feedback or retries. "
+    "Keep each model turn to one short tool call. For sing and choir, use at most "
+    "16 notes per part per call; split longer material into successive phrases. "
     "Do not repeat completed phrases. Stop when the user's requested content is complete."
 )
 
@@ -112,10 +119,61 @@ def sing_tool():
     }
 
 
+def choir_tool():
+    part = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["part", "lyrics", "ipa", "notes", "vibrato"],
+        "properties": {
+            "part": {"type": "string", "enum": ["soprano", "alto", "tenor", "bass"]},
+            "lyrics": {"type": "string", "minLength": 1, "maxLength": 300},
+            "ipa": {"type": "string", "minLength": 1, "maxLength": 600},
+            "notes": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": MAX_NOTES_PER_PHRASE,
+                "description": "[midi, beats] pairs, one per syllable of lyrics",
+                "items": {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 2,
+                    "items": {"type": "number"},
+                },
+            },
+            "vibrato": {"type": "number", "minimum": 0, "maximum": 80},
+        },
+    }
+    return {
+        "type": "function",
+        "function": {
+            "name": "choir",
+            "description": "Sing a four-part harmony through four CHIMERA vocal-tract synthesizers at once: soprano, alto, tenor and bass, each composed on the shared tempo.",
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["reply", "bpm", "parts"],
+                "properties": {
+                    "reply": {"type": "string", "minLength": 1, "maxLength": 200},
+                    "bpm": {"type": "number", "minimum": 50, "maximum": 160},
+                    "parts": {
+                        "type": "array",
+                        "minItems": 4,
+                        "maxItems": 4,
+                        "items": part,
+                    },
+                },
+            },
+        },
+    }
+
+
+PARTS = {"soprano", "alto", "tenor", "bass"}
+
+
 MAX_NOTES_PER_PHRASE = 16
 MAX_HISTORY_MESSAGES = 24
 
-TOOLS = [speak_tool(), sing_tool()]
+TOOLS = [speak_tool(), sing_tool(), choir_tool()]
 
 TOOL_SCHEMAS = {t["function"]["name"]: t["function"]["parameters"] for t in TOOLS}
 
@@ -358,6 +416,8 @@ def validate(name, arguments):
         jsonschema.validate(args, TOOL_SCHEMAS[name])
     except jsonschema.ValidationError as error:
         raise ValueError(error.message) from error
+    if name == "choir" and {p["part"] for p in args["parts"]} != PARTS:
+        raise ValueError("expected one part each of soprano, alto, tenor, bass")
     if name in ("sing", "choir"):
         note_lists = [args["notes"]] if name == "sing" else [p["notes"] for p in args["parts"]]
         for notes in note_lists:
@@ -470,7 +530,8 @@ async def conversation(messages, endpoint, emit, endpoint_setup_s=0, renderer=No
                     "role": "tool",
                     "tool_call_id": call.get("id"),
                     "name": name,
-                    "content": "spoken — go on with the next phrase, or finish when done",
+                    "content": ("sung" if name in ("sing", "choir") else "spoken")
+                    + " — go on with the next phrase, or finish when done",
                 })
         elif finish_reason == "length":
             group = []
@@ -576,6 +637,8 @@ async def event_stream(
                     tool = data.get("tool")
                 if isinstance(tool, str) and tool in TOOL_SCHEMAS:
                     record["tool"] = tool
+            if data.get("part") in PARTS:
+                record["part"] = data["part"]
         getattr(log, level)(json.dumps(record, allow_nan=False))
 
     def emit(kind, data):

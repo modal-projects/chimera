@@ -3,12 +3,14 @@ import * as THREE from "three";
 import { Anatomy3D } from "../../vendor/chimera/src/ui/render/anatomy3d.ts";
 import { Glow } from "../../vendor/chimera/src/ui/render/vector.ts";
 import { engine } from "../../vendor/chimera/src/audio/AudioEngine.ts";
+import type { TelemetryMessage } from "../../vendor/chimera/src/worklet/protocol.ts";
 import { sameBody } from "../../vendor/chimera/src/ui/body.ts";
+import type { BodyMix } from "../../vendor/chimera/src/wasm/types.ts";
 import { useStore } from "../../vendor/chimera/src/ui/store.ts";
 import { useModel } from "../../vendor/chimera/src/ui/useModel.ts";
 import { VoiceModel } from "../../vendor/chimera/src/ui/analysis.ts";
 
-export function FrontalHead() {
+export function FrontalHead({ audio = engine, body }: { audio?: { latest: TelemetryMessage | null }; body?: BodyMix }) {
   const canvasRef=useRef<HTMLCanvasElement>(null);
   const model=useModel();
   const [failed,setFailed]=useState(false);
@@ -22,7 +24,7 @@ export function FrontalHead() {
     gl.setClearColor(0x000000,1);
     const head=new Anatomy3D(),glow=new Glow();
     head.centred=true;
-    let posed:VoiceModel|null=null,pose:{home:THREE.Vector3;target:THREE.Vector3}|null=null,raf=0,last=performance.now();
+    let posed:VoiceModel|null=null,pose:{home:THREE.Vector3;target:THREE.Vector3}|null=null,raf=0,last=performance.now(),idle=false;
     const view={azimuth:0,elevation:0,dragging:false,x:0,y:0};
     const down=(e:PointerEvent)=>{view.dragging=true;view.x=e.clientX;view.y=e.clientY;canvas.setPointerCapture(e.pointerId)};
     const move=(e:PointerEvent)=>{if(!view.dragging)return;view.azimuth+=(e.clientX-view.x)*0.01;view.elevation=Math.max(-0.6,Math.min(0.6,view.elevation+(e.clientY-view.y)*0.008));view.x=e.clientX;view.y=e.clientY};
@@ -38,7 +40,9 @@ export function FrontalHead() {
     const frame=(now:number)=>{
       const elapsed=Math.min(.5,(now-last)/1000),dt=Math.min(.05,elapsed);last=now;
       const m=model.current,st=useStore.getState();
-      const tele=engine.latest&&sameBody(engine.latest.body,st.body)?engine.latest:null;
+      const tele=audio.latest&&sameBody(audio.latest.body,body??st.body)?audio.latest:null;
+      if(!tele&&!view.dragging){idle=!idle;if(idle){raf=requestAnimationFrame(frame);return;}}
+      else idle=false;
       if(m){
         if(posed!==m){pose=head.poses(m);posed=m;}
         if(pose){
@@ -59,6 +63,6 @@ export function FrontalHead() {
     };
     raf=requestAnimationFrame(frame);
     return()=>{cancelAnimationFrame(raf);observer.disconnect();canvas.removeEventListener("pointerdown",down);canvas.removeEventListener("pointermove",move);canvas.removeEventListener("pointerup",up);canvas.removeEventListener("pointercancel",up);head.dispose();gl.dispose()};
-  },[model]);
-  return <div className="anatomy">{failed?<div role="alert">3D rendering is unavailable.</div>:null}<canvas ref={canvasRef}/></div>;
+  },[model,audio,body]);
+  return <div className="anatomy">{failed?<div role="alert">3D rendering is unavailable.</div>:null}<canvas ref={canvasRef} role="img" aria-label="Animated vocal-tract head"/></div>;
 }
