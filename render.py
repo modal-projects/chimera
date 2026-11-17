@@ -299,6 +299,7 @@ def _solo(job, emit, stop=None, reserve=None):
         raise BudgetExceeded(f"phrase duration {duration:.2f}s exceeds the {MAX_PHRASE_SECONDS:.0f}s limit")
     if reserve is not None:
         reserve(duration)
+    emit("lines", {"n": job["n"], "lines": [{"at": l["at"] + LEAD, "text": l["text"]} for l in lines]})
     for block in _render_voice(voice, plan, job["n"], None, emit, stop):
         _emit_audio(emit, job["n"], block, 0.8)
 
@@ -311,6 +312,8 @@ def _choir(job, emit, stop=None, reserve=None):
     for part in PARTS:
         v = Voice({"female": PART_BODIES[part][0], "child": PART_BODIES[part][1]})
         plans[part], lines = plan_sing(v, wanted[part]["lyrics"], wanted[part]["notes"], args.get("bpm"), wanted[part].get("vibrato"), wanted[part].get("ipa"))
+        if part == "soprano":
+            emit("lines", {"n": job["n"], "lines": [{"at": l["at"] + LEAD, "text": l["text"]} for l in lines]})
         voices[part] = v
     duration = max(_plan_seconds(plans[p]["end"]) for p in PARTS)
     if duration > MAX_PHRASE_SECONDS:

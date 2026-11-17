@@ -43,6 +43,8 @@ export function FrontalHead({ audio = engine, body }: { audio?: { latest: Teleme
       const pc=player.ctx,pos=player.audiblePos(),sounding=!!(pc&&pc.state==="running"&&pos>=0&&pos<player.end());
       const m=model.current,st=useStore.getState();
       const tele=audio.latest&&sameBody(audio.latest.body,body??st.body)?audio.latest:null;
+      if(!tele&&!view.dragging){idle=!idle;if(idle){raf=requestAnimationFrame(frame);return;}}
+      else idle=false;
       if(m){
         if(posed!==m){
           pose=head.poses(m);posed=m;
@@ -68,4 +70,5 @@ export function FrontalHead({ audio = engine, body }: { audio?: { latest: Teleme
     };
     raf=requestAnimationFrame(frame);
   },[model,audio,body]);
+  return <div className="anatomy">{failed?<div role="alert">3D rendering is unavailable.</div>:null}<canvas ref={canvasRef} role="img" aria-label="Animated vocal-tract head"/></div>;
 }

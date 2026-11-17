@@ -53,7 +53,9 @@ export function App() {
       };
       const nextChoirAt=()=>{ let m: number|null=null; for(const v of choirVoices.values()){ const a=v.nextAt; if(a!==null&&(m===null||a<m)) m=a; } return m; };
       const phraseStart=new Map<number,number>();
+      const pendingLines=new Map<number,{at:number;text:string}[]>();
       const choirPhrases=new Set<number>();
+      const lines:{at:number;text:string}[]=[];
       const replies:string[]=[];
       let replyTimer=0, dismissTimer=0;
       const response = await fetch("/api/say", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({text:message, history:convo.current, telemetry_format:"f32"}), signal:abort.signal});
@@ -64,6 +66,10 @@ export function App() {
       const pumpFrame=()=>{
         const pos=player.audiblePos();
         if(pos<0) return;
+        while(lines.length&&lines[0].at<=pos){
+          const line=lines.shift()!;
+          if(turn.current===id) setReply(line.text);
+        }
         const due=pos+0.25, s=solo.nextAt, m=nextChoirAt();
         if(chorusLive&&s!==null&&(m===null||s<m)&&s<=due) leaveChorus();
         else if(!chorusLive&&m!==null&&(s===null||m<s)&&m<=due) summonChorus();
@@ -80,11 +86,14 @@ export function App() {
             if(!chorusLive&&solo.nextAt===null) summonChorus();
           } else if(value.body) useStore.getState().previewBody(PRESETS[value.body as BodyName]);
         } else if(event==="lines") {
+          pendingLines.set(value.n as number,value.lines as {at:number;text:string}[]);
         } else if(event==="audio") {
           const n=value.n as number;
           const off=player.enqueue(n, decodePcm(value.pcm as string), value.sr as number, choirPhrases.has(n));
           if(!phraseStart.has(n)){
             phraseStart.set(n,off);
+            for(const l of pendingLines.get(n)??[]) lines.push({at:off+l.at,text:l.text});
+            pendingLines.delete(n);
           }
         } else if(event==="tele") {
           const v=value.part?choirVoices.get(value.part as Part):solo;
@@ -118,6 +127,7 @@ export function App() {
       setError(failure instanceof Error?failure.message:"Request failed");
       setReply("");
     } finally { pumping=false; setBusy(false); }
+      setText(t=>t||message);
   };
   return <main><header>
     <div className="head-meta">
