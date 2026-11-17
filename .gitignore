@@ -1,0 +1,8 @@
+target/
+*.wav
+.venv/
+__pycache__/
+.pytest_cache/
+web/node_modules/
+/node_modules
+.demo-proxy.env

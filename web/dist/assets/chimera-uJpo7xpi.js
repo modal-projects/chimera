@@ -1,0 +1,1 @@
+var e=`/assets/chimera-Bkm4qYSU.wasm`;export{e as default};
