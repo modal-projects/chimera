@@ -14,10 +14,12 @@ function ChoirCell({part,voice,delay,leaving,thinking}:{part:Part;voice:StreamVo
 }
 
 export function App() {
-  const [text,setText] = useState("");
+  const lastSent=useRef("");
+  const [text,setText] = useState(()=>new URLSearchParams(location.search).get("q")||"");
   const [error,setError] = useState("");
   const [reply,setReply] = useState("");
   const [busy,setBusy] = useState(false);
+  const [copied,setCopied] = useState(false);
   const [chorus,setChorus] = useState<[Part,StreamVoice][]|null>(null);
   const [dismissing,setDismissing] = useState(false);
   const [thinking,setThinking] = useState(false);
@@ -30,6 +32,7 @@ export function App() {
     const message=text.trim();
     if (!message || busy) return;
     const id=++turn.current;
+    lastSent.current=message;
     setBusy(true); setError(""); setReply(""); setText(""); setThinking(false); setDismissing(false);
     let pumping=false;
     const abort=new AbortController();
@@ -133,6 +136,12 @@ export function App() {
       setText(t=>t||message);
     } finally { setThinking(false); pumping=false; setBusy(false); }
   };
+  const share = async () => {
+    const url=`${location.origin}${location.pathname}?q=${encodeURIComponent(text.trim()||lastSent.current)}`;
+    history.replaceState(null,"",url);
+    try{ await navigator.clipboard.writeText(url); setCopied(true); window.setTimeout(()=>setCopied(false),1200); }
+    catch{ setError("Couldn't copy the link"); }
+  };
   return <main><header>
     <div className="head-meta">
       <a className="eyebrow" href="https://modal.com/library/moonshot/kimi-k3-1-pro" target="_blank" rel="noreferrer">Kimi K3.1 Pro</a>
@@ -144,6 +153,7 @@ export function App() {
         )
       : <section className="head summon"><FrontalHead audio={soloRef.current??undefined} thinking={thinking}/></section>}</div>
     <div className="reply" aria-live="polite"><em>{reply||" "}</em></div>
+    <section className="composer"><input aria-label="Message" value={text} onChange={e=>setText(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")void submit()}} placeholder="Talk to the head..." maxLength={500} enterKeyHint="send"/><button onClick={()=>void submit()} disabled={busy||!text.trim()} aria-label="Send">{busy?<svg className="spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 1 1-6.2-8.56"/></svg>:<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4Z"/></svg>}</button><button className="share" onClick={()=>void share()} disabled={!text.trim()&&!lastSent.current} aria-label="Copy a link to this prompt">{copied?<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5"/></svg>:<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>}</button></section>
     {error&&<div role="alert" className="speech-error">{error}</div>}
   </main>;
 }
