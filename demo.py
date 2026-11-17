@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -11,6 +12,7 @@ from pathlib import Path
 import httpx
 import jsonschema
 import modal
+import re
 
 ROOT = Path(__file__).resolve().parent
 MODEL = os.environ.get("CHIMERA_DEMO_MODEL", "kimi-k3-1-pro")
@@ -26,6 +28,13 @@ SYSTEM = (
     "consonants p b t d k \u0261 m n \u014b f v \u03b8 \u00f0 s z \u0283 \u0292 h t\u0283 d\u0292 l \u0279 j w. "
     "Required controls: intonation (statement/question/flat), rate (0.5-1.8), f0 (Hz), "
     "accent (0-2, stress emphasis), sung, body (male/female/child); set them expressively. "
+    "Call sing instead when the user asks for a song, singing or music, or when a sung reply "
+    "lands better — once per phrase of lyrics (a breath-bounded line ending in , . ! ?), "
+    "keeping bpm, body and vibrato consistent across calls: `lyrics` are the sung words "
+    "(~ repeats a vowel onto the next note), `ipa` their IPA transcription as space-separated "
+    "syllables aligned with the notes, in the same phoneme alphabet as speak — write it for "
+    "every language (Korean, Chinese, etc. too), `bpm` the tempo, `notes` one "
+    "[midi, beats] pair per syllable (midi 57-79 sings best), `body` the singer. "
     "Compact JSON. No feedback or retries. "
     "Do not repeat completed phrases. Stop when the user's requested content is complete."
 )
@@ -68,11 +77,49 @@ def speak_tool():
     }
 
 
+def sing_tool():
+    return {
+        "type": "function",
+        "function": {
+            "name": "sing",
+            "description": "Sing the given lyrics as a composed melody through the CHIMERA vocal-tract synthesizer.",
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["reply", "lyrics", "ipa", "bpm", "notes", "body"],
+                "properties": {
+                    "reply": {"type": "string", "minLength": 1, "maxLength": 200},
+                    "lyrics": {"type": "string", "minLength": 1, "maxLength": 300},
+                    "ipa": {"type": "string", "minLength": 1, "maxLength": 600},
+                    "bpm": {"type": "number", "minimum": 50, "maximum": 160},
+                    "notes": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": MAX_NOTES_PER_PHRASE,
+                        "description": "[midi, beats] pairs, one per syllable of lyrics",
+                        "items": {
+                            "type": "array",
+                            "minItems": 2,
+                            "maxItems": 2,
+                            "items": {"type": "number"},
+                        },
+                    },
+                    "body": {"type": "string", "enum": ["male", "female", "child"]},
+                    "vibrato": {"type": "number", "minimum": 0, "maximum": 80},
+                },
+            },
+        },
+    }
+
+
+MAX_NOTES_PER_PHRASE = 16
 MAX_HISTORY_MESSAGES = 24
 
-TOOLS = [speak_tool()]
+TOOLS = [speak_tool(), sing_tool()]
 
 TOOL_SCHEMAS = {t["function"]["name"]: t["function"]["parameters"] for t in TOOLS}
+
+
 _client = None
 _endpoint = None
 _endpoint_lock = None
@@ -121,11 +168,17 @@ class ClientDisconnected(Exception):
 
 
 STALL_S = 45.0
+MAX_COMPLETION_TOKENS = 4096
+SONGISH = re.compile(
+    r"(?i)(sing|song|melody|music|tune|hymn|carol|anthem|lullaby|serenade|aria|"
+    r"choir|chorus|harmony|opera|ballad|jingle|rap\b|노래|歌|うた|唱)"
+)
 
 
 async def stream_complete(
     endpoint,
     messages,
+    tools=None,
     max_tokens=MAX_COMPLETION_TOKENS,
     reasoning="low",
     thinking=None,
@@ -300,10 +353,17 @@ def _complete_call(item):
 
 def validate(name, arguments):
     args = json.loads(arguments)
+    json.dumps(args, allow_nan=False)
     try:
         jsonschema.validate(args, TOOL_SCHEMAS[name])
     except jsonschema.ValidationError as error:
         raise ValueError(error.message) from error
+    if name in ("sing", "choir"):
+        note_lists = [args["notes"]] if name == "sing" else [p["notes"] for p in args["parts"]]
+        for notes in note_lists:
+            for midi, beats in notes:
+                if not math.isfinite(midi) or not 0 <= midi <= 127 or not math.isfinite(beats) or beats <= 0:
+                    raise ValueError("notes need MIDI in [0, 127] and positive beats")
     return args
 
 
@@ -327,6 +387,7 @@ async def conversation(messages, endpoint, emit, endpoint_setup_s=0, renderer=No
     content, all_calls = "", []
     ttft_s, output_ttft_s, total_s, tokens = None, None, 0.0, 0
     finish_reason = None
+    songish = bool(messages and SONGISH.search(messages[-1].get("content") or ""))
 
     def trim_groups():
         used = 0
@@ -367,6 +428,7 @@ async def conversation(messages, endpoint, emit, endpoint_setup_s=0, renderer=No
             window(),
             tools,
             max_tokens=MAX_COMPLETION_TOKENS,
+            thinking=songish or any(call["function"]["name"] in ("sing", "choir") for call in all_calls),
             on_call=on_call,
             force=not all_calls,
             stop=stop,

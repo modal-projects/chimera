@@ -1,1 +1,1 @@
-
+var e=`/assets/chimera-Bce1Hi3Q.wasm`;export{e as default};
